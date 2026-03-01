@@ -3,6 +3,7 @@ package analyzer
 import (
 	"go/ast"
 	"go/token"
+	"go/types"
 	"strconv"
 	"strings"
 	"unicode"
@@ -25,9 +26,13 @@ func run(pass *analysis.Pass) (any, error) {
 				return true
 			}
 
+			t := pass.TypesInfo.TypeOf(sel.X)
+			if !isLogReceiverType(t) {
+				return true
+			}
+
 			method := sel.Sel.Name
-			recvName := sel.X.(*ast.Ident).Name
-			if !isLogMethod(recvName, method) {
+			if !isLogMethod(method) {
 				return true
 			}
 
@@ -72,16 +77,54 @@ func run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-// Временная простая фильтрация логгеров
-func isLogMethod(recv, method string) bool {
-	switch recv {
-	case "log", "slog":
-		switch method {
-		case "Info", "Error", "Warn", "Debug":
-			return false
-		}
+func isLogReceiverType(t types.Type) bool {
+	if t == nil {
+		return false
 	}
-	return true
+
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+
+	named, ok := t.(*types.Named)
+	if !ok {
+		return false
+	}
+
+	obj := named.Obj()
+	if obj == nil {
+		return false
+	}
+	pkg := obj.Pkg()
+	if pkg == nil {
+		return false
+	}
+
+	pkgPath := pkg.Path()
+	switch pkgPath {
+	case "log/slog":
+		return true
+	case "go.uber.org/zap":
+		return true
+	default:
+		return false
+	}
+}
+
+func isLogMethod(method string) bool {
+	switch method {
+	// Базовые уровни, общие для slog и zap
+	case "Debug", "Info", "Warn", "Error",
+		// zap.Logger дополнительные уровни
+		"DPanic", "Panic", "Fatal",
+		// zap.SugaredLogger printf-методы
+		"Debugf", "Infof", "Warnf", "Errorf", "DPanicf", "Panicf", "Fatalf",
+		// zap.SugaredLogger *w-методы
+		"Debugw", "Infow", "Warnw", "Errorw", "DPanicw", "Panicw", "Fatalw":
+		return true
+	default:
+		return false
+	}
 }
 func lowerCaseLog(msg string) bool {
 	if len(msg) > 0 {
